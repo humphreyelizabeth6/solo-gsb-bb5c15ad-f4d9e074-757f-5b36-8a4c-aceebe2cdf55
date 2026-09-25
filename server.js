@@ -9,6 +9,7 @@ const {
   ONSITE_MARK,
   diffReplays,
 } = require('./replay');
+const { buildStaffing } = require('./staffing');
 
 const app = express();
 app.use(express.json());
@@ -38,12 +39,23 @@ function loadBaseData() {
       transfers: trStmt.all(c.number).map((t) => ({ prop: t.prop, from: t.from_loc, to: t.to_loc })),
     }));
 
-  return { locations, props, cues };
+  const qualStmt = db.prepare(
+    'SELECT prop FROM crew_qualifications WHERE crew_name = ? ORDER BY prop'
+  );
+  const crew = db
+    .prepare('SELECT name FROM crew ORDER BY rowid')
+    .all()
+    .map((m) => ({ name: m.name, props: qualStmt.all(m.name).map((q) => q.prop) }));
+
+  return { locations, props, cues, crew };
 }
 
 function loadState() {
-  const { locations, props, cues } = loadBaseData();
-  return { locations, props, cues, replay: replay(locations, props, cues) };
+  const { locations, props, cues, crew } = loadBaseData();
+  const replayResult = replay(locations, props, cues);
+  // 岗位表以现有重放结果为准，随人员资格 / 提示等任意变化按最新数据重算
+  const staffing = buildStaffing(replayResult.results, cues, crew);
+  return { locations, props, cues, crew, replay: replayResult, staffing };
 }
 
 function ok(res) {
@@ -470,6 +482,81 @@ app.post('/api/onsite/simulate', (req, res) => {
     onsite: onsiteReplay,
     finalDiff,
   });
+});
+
+/* ---------- 换景人员与搬运资格 ----------
+ * 维护工作人员及其可搬运的道具名单；岗位表不单独落库，
+ * 每次写操作后由 buildStaffing 依据最新数据（含重放结果）整表重算。
+ */
+
+// 解析并校验资格名单：去空白、去重；道具必须存在
+function parseQualifications(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const props = [];
+  const seen = new Set();
+  for (const item of list) {
+    const prop = String(item == null ? '' : item).trim();
+    if (!prop) return { err: '可搬运道具名单不能包含空值' };
+    if (seen.has(prop)) continue;
+    seen.add(prop);
+    if (!db.prepare('SELECT 1 FROM props WHERE name = ?').get(prop))
+      return { err: `道具「${prop}」不存在，无法作为搬运资格` };
+    props.push(prop);
+  }
+  return { props };
+}
+
+app.get('/api/crew', (req, res) => {
+  res.json({ crew: loadBaseData().crew });
+});
+
+// 单独查看岗位表（与全量状态中的 staffing 一致，均按最新数据即时重算）
+app.get('/api/staffing', (req, res) => {
+  const { locations, props, cues, crew } = loadBaseData();
+  const replayResult = replay(locations, props, cues);
+  res.json(buildStaffing(replayResult.results, cues, crew));
+});
+
+app.post('/api/crew', (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name) return bad(res, '人员姓名不能为空');
+  if (db.prepare('SELECT 1 FROM crew WHERE name = ?').get(name))
+    return bad(res, `人员「${name}」已存在`, 409);
+  const q = parseQualifications(req.body.props);
+  if (q.err) return bad(res, q.err);
+
+  const tx = db.transaction(() => {
+    db.prepare('INSERT INTO crew (name) VALUES (?)').run(name);
+    const ins = db.prepare('INSERT INTO crew_qualifications (crew_name, prop) VALUES (?, ?)');
+    for (const prop of q.props) ins.run(name, prop);
+  });
+  tx();
+  ok(res);
+});
+
+// 整份替换某人的可搬运道具名单（页面勾选框直接提交最新全集）
+app.put('/api/crew/:name', (req, res) => {
+  const name = req.params.name;
+  if (!db.prepare('SELECT 1 FROM crew WHERE name = ?').get(name))
+    return bad(res, `人员「${name}」不存在`, 404);
+  const q = parseQualifications(req.body.props);
+  if (q.err) return bad(res, q.err);
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM crew_qualifications WHERE crew_name = ?').run(name);
+    const ins = db.prepare('INSERT INTO crew_qualifications (crew_name, prop) VALUES (?, ?)');
+    for (const prop of q.props) ins.run(name, prop);
+  });
+  tx();
+  ok(res);
+});
+
+app.delete('/api/crew/:name', (req, res) => {
+  const name = req.params.name;
+  if (!db.prepare('SELECT 1 FROM crew WHERE name = ?').get(name))
+    return bad(res, `人员「${name}」不存在`, 404);
+  db.prepare('DELETE FROM crew WHERE name = ?').run(name); // 资格级联删除
+  ok(res);
 });
 
 /* ---------- 启动 ---------- */

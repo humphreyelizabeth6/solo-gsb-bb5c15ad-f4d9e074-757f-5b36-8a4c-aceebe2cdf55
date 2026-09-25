@@ -219,6 +219,8 @@ function render() {
   renderCues();
   renderReplay();
   renderSimForm();
+  renderCrew();
+  renderStaffing();
 }
 
 /* ---------- 事件 ---------- */
@@ -712,6 +714,110 @@ $('#sim-form').addEventListener('submit', async (e) => {
     btn.disabled = false;
     btn.textContent = '🎯 开始现场推演';
   }
+});
+
+/* ---------- 换景人员与岗位表 ---------- */
+
+function renderCrew() {
+  const tbody = $('#crew-rows');
+  if (!state.crew.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="hint" style="border:none">还没有人员，请在下方添加。</td></tr>';
+    return;
+  }
+  if (!state.props.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="hint" style="border:none">请先在 ② 中添加道具，再勾选搬运资格。</td></tr>';
+    return;
+  }
+  tbody.innerHTML = state.crew
+    .map((m) => {
+      const qual = new Set(m.props);
+      const checks = state.props
+        .map((p) => `
+          <label class="qual-chip">
+            <input type="checkbox" data-crew-qual="${esc(m.name)}" value="${esc(p.name)}" ${qual.has(p.name) ? 'checked' : ''} />
+            <span>${esc(p.name)}</span>
+          </label>`)
+        .join('');
+      return `
+        <tr>
+          <td><strong>${esc(m.name)}</strong></td>
+          <td><div class="qual-list">${checks}</div></td>
+          <td><button class="link" data-del-crew="${esc(m.name)}">删除</button></td>
+        </tr>`;
+    })
+    .join('');
+}
+
+function renderStaffing() {
+  const box = $('#staffing-results');
+  const staffing = state.staffing && state.staffing.results;
+  if (!staffing || !staffing.length) {
+    box.innerHTML = '<p class="hint">暂无提示可排岗。</p>';
+    return;
+  }
+  box.innerHTML = staffing
+    .map((g) => {
+      let badge;
+      let body;
+      if (g.status === 'skipped') {
+        badge = '<span class="badge skip">— 无需执行</span>';
+        body = '<p class="hint">该提示整组未生效，不安排岗位。</p>';
+      } else if (g.status === 'understaffed') {
+        badge = '<span class="badge fail">✗ 人手不足</span>';
+        body = `
+          <div class="staff-short">无法为整组排出完整匹配，未覆盖道具：
+            ${g.uncoveredProps.map((p) => `<span class="chip miss">「${esc(p)}」</span>`).join('')}
+          </div>
+          <p class="hint">整组不输出部分岗位表；请在 ⑦ 中补充具备资格的人员后自动重算。</p>`;
+      } else {
+        badge = `<span class="badge ok">✓ 已排 ${g.posts.length} 岗</span>`;
+        body = `
+          <table class="table staff-table">
+            <thead><tr><th>道具</th><th>路线</th><th>上岗人员</th></tr></thead>
+            <tbody>
+              ${g.posts.map((post) => `
+                <tr>
+                  <td>${esc(post.prop)}</td>
+                  <td>${esc(post.from)} <span class="arrow">→</span> ${esc(post.to)}</td>
+                  <td>${esc(post.person)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`;
+      }
+      return `
+        <div class="cue-item staff ${g.status === 'staffed' ? 'ok' : g.status === 'understaffed' ? 'fail' : 'skip'}">
+          <div class="cue-head">
+            <span class="num">提示 ${g.number}</span>
+            <span class="note">${esc(g.note || '')}</span>
+            ${badge}
+          </div>
+          ${body}
+        </div>`;
+    })
+    .join('');
+}
+
+$('#crew-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $('#crew-name').value.trim();
+  if (!name) return;
+  api('/api/crew', 'POST', { name, props: [] }).then(() => { $('#crew-name').value = ''; }).catch(() => {});
+});
+
+// 勾选/取消勾选搬运资格：整份名单替换提交，服务端返回最新状态并重算岗位表
+$('#crew-rows').addEventListener('change', (e) => {
+  const memberName = e.target.dataset.crewQual;
+  if (!memberName) return;
+  const row = e.target.closest('tr');
+  const props = [...row.querySelectorAll('input[data-crew-qual]:checked')].map((cb) => cb.value);
+  api(`/api/crew/${encodeURIComponent(memberName)}`, 'PUT', { props }).catch(() => {});
+});
+
+$('#crew-rows').addEventListener('click', (e) => {
+  const name = e.target.dataset.delCrew;
+  if (!name) return;
+  if (confirm(`删除人员「${name}」？其全部搬运资格一并移除，岗位表将重算。`))
+    api(`/api/crew/${encodeURIComponent(name)}`, 'DELETE').catch(() => {});
 });
 
 /* ---------- 启动 ---------- */

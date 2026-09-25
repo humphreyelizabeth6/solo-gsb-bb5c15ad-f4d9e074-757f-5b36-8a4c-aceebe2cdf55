@@ -234,6 +234,34 @@ button:disabled { opacity: .55; cursor: wait; }
 .sim-diff-table tr.sim-diff-row td:last-child { border-radius: 0 6px 6px 0; }
 .pv-cue-head .note { color: var(--muted); font-size: 13px; }
 
+/* 换景人员与岗位表 */
+.crew-table td { vertical-align: middle; }
+.qual-list { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.qual-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.qual-chip input { accent-color: var(--accent2); width: auto; margin: 0; cursor: pointer; }
+.cue-item.staff.skip { border-left-color: var(--muted); opacity: .85; }
+.badge.skip { background: rgba(154, 144, 181, .12); color: var(--muted); border: 1px solid var(--muted); }
+.staff-table { margin: 8px 0 2px; }
+.staff-table th, .staff-table td { padding: 5px 8px; }
+.staff-short { margin-top: 8px; font-size: 14px; color: var(--err); }
+.board .chip.miss, .staff-short .chip.miss {
+  background: rgba(224, 92, 106, .12);
+  border-color: var(--err);
+  color: var(--err);
+  margin: 0 2px;
+}
+
 #toast {
   position: fixed;
   bottom: 24px;

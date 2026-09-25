@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS transfers (
   to_loc     TEXT NOT NULL,
   UNIQUE (cue_number, prop)                -- 同组内每件道具最多转移一次
 );
+
+CREATE TABLE IF NOT EXISTS crew (
+  name       TEXT PRIMARY KEY              -- 换景工作人员，rowid 即维护/匹配顺序
+);
+
+CREATE TABLE IF NOT EXISTS crew_qualifications (
+  crew_name  TEXT NOT NULL REFERENCES crew(name) ON DELETE CASCADE,
+  prop       TEXT NOT NULL REFERENCES props(name) ON DELETE CASCADE,
+  PRIMARY KEY (crew_name, prop)            -- 某人可搬运某道具的资格
+);
 `);
 
 // 首次启动时写入示例数据（区位 / 道具 / 三条提示，其中 30 号故意与 20 号冲突，用于演示整组不生效）
@@ -68,6 +78,19 @@ function seed() {
 
     insCue.run(30, '花瓶移至台右（示例：与 20 号提示冲突，整组不生效）');
     insTr.run(30, '花瓶', '舞台左', '舞台右');
+
+    // 换景人员与搬运资格：10 号提示两条转移，张三、李四需整体匹配（若按转移顺序贪心，
+    // 张三先搬了屏风，桌子便无人可搬——服务端必须对整组求完整匹配，不能贪心）；
+    // 20 号提示的宝剑无人有资格，演示「人手不足 + 标出未覆盖道具」
+    const insCrew = db.prepare('INSERT INTO crew (name) VALUES (?)');
+    const insQual = db.prepare('INSERT INTO crew_qualifications (crew_name, prop) VALUES (?, ?)');
+    insCrew.run('张三');
+    insCrew.run('李四');
+    insCrew.run('王五');
+    insQual.run('张三', '屏风');
+    insQual.run('张三', '桌子');
+    insQual.run('李四', '屏风');
+    insQual.run('王五', '花瓶');
   });
   tx();
   console.log('[db] 已写入示例数据');
