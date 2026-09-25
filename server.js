@@ -9,6 +9,7 @@ const {
   ONSITE_MARK,
   diffReplays,
 } = require('./replay');
+const { computeAssignments } = require('./assignment');
 
 const app = express();
 app.use(express.json());
@@ -41,9 +42,22 @@ function loadBaseData() {
   return { locations, props, cues };
 }
 
+/* 人员及其可搬运道具名单（资格按录入顺序返回） */
+function loadStaff() {
+  const qualStmt = db.prepare('SELECT prop FROM staff_quals WHERE staff = ? ORDER BY rowid');
+  return db
+    .prepare('SELECT name FROM staff ORDER BY rowid')
+    .all()
+    .map((s) => ({ name: s.name, props: qualStmt.all(s.name).map((q) => q.prop) }));
+}
+
 function loadState() {
   const { locations, props, cues } = loadBaseData();
-  return { locations, props, cues, replay: replay(locations, props, cues) };
+  const staff = loadStaff();
+  const replayResult = replay(locations, props, cues);
+  // 岗位表以最新重放结果 + 最新人员资格实时重算，不落地存储
+  const assignments = computeAssignments(cues, replayResult.results, staff);
+  return { locations, props, cues, replay: replayResult, staff, assignments };
 }
 
 function ok(res) {
@@ -126,7 +140,11 @@ app.delete('/api/props/:name', (req, res) => {
   if (!db.prepare('SELECT 1 FROM props WHERE name = ?').get(name))
     return bad(res, `道具「${name}」不存在`, 404);
   // 引用该道具的转移保留，重放时会明确提示「道具不存在」，便于舞台监督核对
-  db.prepare('DELETE FROM props WHERE name = ?').run(name);
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM props WHERE name = ?').run(name);
+    db.prepare('DELETE FROM staff_quals WHERE prop = ?').run(name); // 搬运资格随道具一并失效
+  });
+  tx();
   ok(res);
 });
 
@@ -470,6 +488,65 @@ app.post('/api/onsite/simulate', (req, res) => {
     onsite: onsiteReplay,
     finalDiff,
   });
+});
+
+/* ---------- 换景人员与搬运资格 ----------
+ * 人员与资格变化后不落任何岗位表缓存：loadState 每次都用最新数据重算。
+ */
+
+app.post('/api/staff', (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name) return bad(res, '人员姓名不能为空');
+  if (db.prepare('SELECT 1 FROM staff WHERE name = ?').get(name))
+    return bad(res, `人员「${name}」已存在`, 409);
+  db.prepare('INSERT INTO staff (name) VALUES (?)').run(name);
+  ok(res);
+});
+
+app.delete('/api/staff/:name', (req, res) => {
+  const name = req.params.name;
+  if (!db.prepare('SELECT 1 FROM staff WHERE name = ?').get(name))
+    return bad(res, `人员「${name}」不存在`, 404);
+  db.prepare('DELETE FROM staff WHERE name = ?').run(name); // 搬运资格级联删除
+  ok(res);
+});
+
+app.post('/api/staff/:name/quals', (req, res) => {
+  const name = req.params.name;
+  const prop = String(req.body.prop || '').trim();
+  if (!db.prepare('SELECT 1 FROM staff WHERE name = ?').get(name))
+    return bad(res, `人员「${name}」不存在`, 404);
+  if (!prop) return bad(res, '请选择要授权的道具');
+  if (!db.prepare('SELECT 1 FROM props WHERE name = ?').get(prop))
+    return bad(res, `道具「${prop}」不存在`, 404);
+  if (db.prepare('SELECT 1 FROM staff_quals WHERE staff = ? AND prop = ?').get(name, prop))
+    return bad(res, `「${name}」已具备「${prop}」的搬运资格`, 409);
+  db.prepare('INSERT INTO staff_quals (staff, prop) VALUES (?, ?)').run(name, prop);
+  ok(res);
+});
+
+app.delete('/api/staff/:name/quals/:prop', (req, res) => {
+  const { name, prop } = req.params;
+  if (!db.prepare('SELECT 1 FROM staff WHERE name = ?').get(name))
+    return bad(res, `人员「${name}」不存在`, 404);
+  const r = db.prepare('DELETE FROM staff_quals WHERE staff = ? AND prop = ?').run(name, prop);
+  if (r.changes === 0)
+    return bad(res, `「${name}」本就不具备「${prop}」的搬运资格`, 404);
+  ok(res);
+});
+
+/* ---------- 逐提示岗位表 ----------
+ * 以最新重放结果与最新人员资格实时计算（与 /api/state 中的 assignments 一致）。
+ */
+app.get('/api/assignments', (req, res) => {
+  const { assignments } = loadState();
+  const summary = {
+    total: assignments.length,
+    ready: assignments.filter((a) => a.status === 'ok').length,
+    understaffed: assignments.filter((a) => a.status === 'understaffed').length,
+    skipped: assignments.filter((a) => a.status === 'skipped').length,
+  };
+  res.json({ assignments, summary });
 });
 
 /* ---------- 启动 ---------- */

@@ -35,9 +35,20 @@ CREATE TABLE IF NOT EXISTS transfers (
   to_loc     TEXT NOT NULL,
   UNIQUE (cue_number, prop)                -- 同组内每件道具最多转移一次
 );
+
+CREATE TABLE IF NOT EXISTS staff (
+  name       TEXT PRIMARY KEY             -- 换景人员姓名
+);
+
+CREATE TABLE IF NOT EXISTS staff_quals (
+  staff      TEXT NOT NULL REFERENCES staff(name) ON DELETE CASCADE,
+  prop       TEXT NOT NULL,               -- 可搬运的道具；道具删除时由服务端一并清理
+  PRIMARY KEY (staff, prop)               -- 同一人员对同一道具只记一条资格
+);
 `);
 
-// 首次启动时写入示例数据（区位 / 道具 / 三条提示，其中 30 号故意与 20 号冲突，用于演示整组不生效）
+// 首次启动时写入示例数据（区位 / 道具 / 人员 / 四条提示：30 号故意与 20 号冲突演示整组不生效，
+// 40 号故意让两件道具只能由同一人搬运，演示岗位匹配的人手不足）
 function seed() {
   const { c } = db.prepare('SELECT COUNT(*) AS c FROM locations').get();
   if (c > 0) return;
@@ -54,12 +65,24 @@ function seed() {
     insProp.run('屏风', '后台');
     insProp.run('椅子', '后台');
 
+    const insStaff = db.prepare('INSERT INTO staff (name) VALUES (?)');
+    const insQual = db.prepare('INSERT INTO staff_quals (staff, prop) VALUES (?, ?)');
+    insStaff.run('张三');
+    insQual.run('张三', '桌子');
+    insQual.run('张三', '屏风');
+    insStaff.run('李四');
+    insQual.run('李四', '花瓶');
+    insQual.run('李四', '宝剑');
+    insStaff.run('王五');
+    insQual.run('王五', '屏风');
+    insQual.run('王五', '椅子');
+
     const insCue = db.prepare('INSERT INTO cues (number, note) VALUES (?, ?)');
     const insTr = db.prepare(
       'INSERT INTO transfers (cue_number, prop, from_loc, to_loc) VALUES (?, ?, ?, ?)'
     );
 
-    insCue.run(10, '一幕开场：桌子与屏风互换（同组互换区位）');
+    insCue.run(10, '一幕开场：桌子与屏风互换（同组互换区位；桌子仅张三能搬，屏风须改派王五）');
     insTr.run(10, '屏风', '后台', '舞台中央');
     insTr.run(10, '桌子', '舞台中央', '后台');
 
@@ -68,6 +91,10 @@ function seed() {
 
     insCue.run(30, '花瓶移至台右（示例：与 20 号提示冲突，整组不生效）');
     insTr.run(30, '花瓶', '舞台左', '舞台右');
+
+    insCue.run(40, '花瓶与宝剑同时撤下（示例：仅李四两者都能搬，人手不足）');
+    insTr.run(40, '花瓶', '舞台左', '后台');
+    insTr.run(40, '宝剑', '舞台右', '后台');
   });
   tx();
   console.log('[db] 已写入示例数据');

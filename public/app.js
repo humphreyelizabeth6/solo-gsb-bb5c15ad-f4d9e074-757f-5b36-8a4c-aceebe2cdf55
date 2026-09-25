@@ -219,6 +219,112 @@ function render() {
   renderCues();
   renderReplay();
   renderSimForm();
+  renderStaff();
+  renderAssignments();
+}
+
+/* ---------- 换景人员与逐提示岗位表 ---------- */
+
+function renderStaff() {
+  const box = $('#staff-list');
+  if (!state.staff.length) {
+    box.innerHTML = '<p class="hint">还没有人员，请在下方添加并授予搬运资格。</p>';
+    return;
+  }
+  box.innerHTML = state.staff
+    .map((s) => {
+      const chips = s.props
+        .map((p) => `
+          <span class="chip qual-chip">${esc(p)}
+            <button type="button" class="chip-x" data-del-qual="${esc(s.name)}" data-prop="${esc(p)}" title="移除该道具的搬运资格">✕</button>
+          </span>`)
+        .join('');
+      // 只能授予尚未具备的道具资格
+      const available = state.props.filter((p) => !s.props.includes(p.name));
+      const addForm = available.length
+        ? `<form class="qual-form inline-form" data-staff="${esc(s.name)}">
+             <select class="qual-prop">${available
+               .map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`)
+               .join('')}</select>
+             <button type="submit" class="small ghost">＋ 授予资格</button>
+           </form>`
+        : '<p class="hint">已具备全部道具的搬运资格。</p>';
+      return `
+        <div class="staff-item">
+          <div class="staff-head">
+            <strong>${esc(s.name)}</strong>
+            ${s.props.length ? '' : '<span class="hint">（暂无搬运资格，无法承担岗位）</span>'}
+            <button type="button" class="link" data-del-staff="${esc(s.name)}">删除</button>
+          </div>
+          <div class="staff-quals">${chips}</div>
+          ${addForm}
+        </div>`;
+    })
+    .join('');
+}
+
+function renderAssignments() {
+  const list = state.assignments || [];
+  const count = { ok: 0, understaffed: 0, skipped: 0 };
+  for (const a of list) count[a.status]++;
+
+  $('#assignment-summary').innerHTML = list.length
+    ? `共 ${list.length} 组提示：<span class="sum-ok">${count.ok} 组人员齐备</span> · ` +
+      `<span class="sum-lack">${count.understaffed} 组人手不足</span> · ` +
+      `<span class="sum-skip">${count.skipped} 组无需执行</span>`
+    : '暂无提示可排岗。';
+
+  $('#assignment-list').innerHTML = list
+    .map((a) => {
+      if (a.status === 'skipped') {
+        // 重放未生效：无需执行，不排岗
+        return `
+          <div class="cue-item skip">
+            <div class="cue-head">
+              <span class="num">提示 ${a.number}</span>
+              <span class="note">${esc(a.note || '')}</span>
+              <span class="badge skip">— 无需执行（整组未生效）</span>
+            </div>
+          </div>`;
+      }
+      if (a.status === 'understaffed') {
+        // 整组无法完整匹配：标出未覆盖道具，不输出部分岗位表
+        return `
+          <div class="cue-item fail">
+            <div class="cue-head">
+              <span class="num">提示 ${a.number}</span>
+              <span class="note">${esc(a.note || '')}</span>
+              <span class="badge fail">✗ 人手不足</span>
+            </div>
+            <ul class="cue-errors">
+              <li>本组需 ${a.transferCount} 个同时执行的岗位，现有资格人员无法整组覆盖；未覆盖道具：${a.uncovered.map((p) => `「${esc(p)}」`).join('、')}</li>
+            </ul>
+            <p class="hint">不输出部分岗位表 —— 请在 ⑦ 中补充人员或调整搬运资格，岗位表将自动重算。</p>
+          </div>`;
+      }
+      const rows = a.positions
+        .map((p, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${esc(p.prop)}</td>
+            <td>${esc(p.from)} <span class="arrow">→</span> ${esc(p.to)}</td>
+            <td><strong>${esc(p.staff)}</strong></td>
+          </tr>`)
+        .join('');
+      return `
+        <div class="cue-item ok">
+          <div class="cue-head">
+            <span class="num">提示 ${a.number}</span>
+            <span class="note">${esc(a.note || '')}</span>
+            <span class="badge ok">✓ 人员齐备（${a.positions.length} 岗）</span>
+          </div>
+          <table class="table assign-table">
+            <thead><tr><th>岗位</th><th>道具</th><th>转移</th><th>担当</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    })
+    .join('');
 }
 
 /* ---------- 事件 ---------- */
@@ -712,6 +818,39 @@ $('#sim-form').addEventListener('submit', async (e) => {
     btn.disabled = false;
     btn.textContent = '🎯 开始现场推演';
   }
+});
+
+/* ---------- 换景人员维护 ---------- */
+
+$('#staff-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $('#staff-name').value.trim();
+  if (!name) return;
+  api('/api/staff', 'POST', { name }).then(() => { $('#staff-name').value = ''; }).catch(() => {});
+});
+
+$('#staff-list').addEventListener('click', (e) => {
+  const delStaff = e.target.dataset.delStaff;
+  if (delStaff) {
+    if (confirm(`删除人员「${delStaff}」？其搬运资格将一并删除，岗位表随即按最新数据重算。`))
+      api(`/api/staff/${encodeURIComponent(delStaff)}`, 'DELETE').catch(() => {});
+    return;
+  }
+  const delQual = e.target.dataset.delQual;
+  if (delQual) {
+    const prop = e.target.dataset.prop;
+    api(`/api/staff/${encodeURIComponent(delQual)}/quals/${encodeURIComponent(prop)}`, 'DELETE').catch(() => {});
+  }
+});
+
+// 每个人员卡片内的「授予资格」小表单（submit 事件会冒泡到列表容器）
+$('#staff-list').addEventListener('submit', (e) => {
+  const form = e.target.closest('.qual-form');
+  if (!form) return;
+  e.preventDefault();
+  const staff = form.dataset.staff;
+  const prop = form.querySelector('.qual-prop').value;
+  api(`/api/staff/${encodeURIComponent(staff)}/quals`, 'POST', { prop }).catch(() => {});
 });
 
 /* ---------- 启动 ---------- */
